@@ -79,9 +79,13 @@ dsh-vps puts a zero-dependency login gateway (dsh-gate) in front of DSH: public 
 </p>
 
 <details>
-<summary><strong>展开查看 9 张原图</strong>（安装 → 向导 → 设置完成 → 登录 → DSH 界面 → 设置 → 插件市场）</summary>
+<summary><strong>展开查看 12 张原图</strong>（DSH 里的「VPS 部署」页 → 安装 → 向导 → 设置完成 → 登录 → DSH 界面 → 设置 → 插件市场）</summary>
 
 <br>
+
+| 在 DSH 里填表安装到 VPS | 从 VPS 卸载 | VPS 上的「本机状态」 |
+| :---: | :---: | :---: |
+| ![](docs/screenshots/00a-deploy-install.webp) | ![](docs/screenshots/00b-deploy-uninstall.webp) | ![](docs/screenshots/00c-deploy-status.webp) |
 
 | 安装完成 | 初始设置向导 | 向导已填写 |
 | :---: | :---: | :---: |

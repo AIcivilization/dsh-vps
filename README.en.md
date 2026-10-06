@@ -74,9 +74,13 @@ dsh-vps puts a zero-dependency login gateway (dsh-gate) in front of DSH: public 
 </p>
 
 <details>
-<summary><strong>Expand for all 9 screenshots</strong> (install → wizard → setup complete → login → DSH UI → settings → marketplace)</summary>
+<summary><strong>Expand for all 12 screenshots</strong> (the VPS Deploy page in DSH → install → wizard → setup complete → login → DSH UI → settings → marketplace)</summary>
 
 <br>
+
+| Install on a VPS from a form in DSH | Uninstall from a VPS | "This server" on the VPS |
+| :---: | :---: | :---: |
+| ![](docs/screenshots/00a-deploy-install.webp) | ![](docs/screenshots/00b-deploy-uninstall.webp) | ![](docs/screenshots/00c-deploy-status.webp) |
 
 | Install done | Setup wizard | Wizard filled |
 | :---: | :---: | :---: |
