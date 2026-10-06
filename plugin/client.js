@@ -3074,11 +3074,17 @@ window.__ModuleLoader__.load({
       ]
       return h('div', { style: S.root },
         // 一句话说明当前这个 DSH 在哪里运行：两边的页签不同，原因在这里
-        h('div', { style: { ...S.note, marginTop: 0, marginBottom: 12 } }, deployed
-          ? t(`当前这个 DSH 运行在由 dsh-vps 部署的服务器上（${host}）。「本机状态」管理这台服务器；也可以从这里把 DSH 装到另一台 VPS，或从某台 VPS 上卸载。`,
-            `This DSH runs on a server deployed by dsh-vps (${host}). "This server" manages it; you can also install DSH on another VPS from here, or uninstall it from one.`)
-          : t('当前是在你自己电脑上运行的 DSH。可以把 DSH 装到你的 VPS 上，或从某台 VPS 上卸载。',
-            'This DSH runs on your own computer. Install DSH on your VPS from here, or uninstall it from one.')),
+        h('div', { style: { ...S.note, marginTop: 0, marginBottom: 12 } },
+          h('div', null, deployed
+            ? t(`当前这个 DSH 运行在由 dsh-vps 部署的服务器上（${host}）。「本机状态」管理这台服务器；也可以从这里把 DSH 装到另一台 VPS，或从某台 VPS 上卸载。`,
+              `This DSH runs on a server deployed by dsh-vps (${host}). "This server" manages it; you can also install DSH on another VPS from here, or uninstall it from one.`)
+            : t('当前是在你自己电脑上运行的 DSH。可以把 DSH 装到你的 VPS 上，或从某台 VPS 上卸载。',
+              'This DSH runs on your own computer. Install DSH on your VPS from here, or uninstall it from one.')),
+          // 姊妹产品：日常管理服务器（命令、终端、文件、AI 操作）用 dsh-vps-manager
+          h('div', { style: { marginTop: 4 } },
+            t('管理 VPS 请用 ', 'To manage your VPS, use '),
+            h('a', { href: 'https://github.com/AIcivilization/dsh-vps-manager', target: '_blank', rel: 'noreferrer', style: { color: T.accent, fontWeight: 600 } }, 'dsh-vps-manager'),
+            t('：在对话里看状态、开终端、管文件，让 AI 操作服务器。', ' — check status, open a terminal, manage files and let the AI operate the server, right in the conversation.'))),
         h(Tabs, { tabs, value: tab, onChange: setTab }),
         tab === 'status'
           ? h('div', null,
