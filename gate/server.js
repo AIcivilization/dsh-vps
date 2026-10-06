@@ -1266,6 +1266,10 @@ function waitForDshCookie(timeoutMs) {
 /**
  * 经 Caddy admin API（127.0.0.1:2019）热加载：把完整 Caddyfile 以 caddyfile 适配器
  * POST 到 /load。gate 以 dsh 用户运行，无权执行 `caddy reload`，admin API 是官方途径。
+ *
+ * 注意 /load 的报文约定：body 就是配置本身，适配器只能经 `?adapter=` 查询参数指定。
+ * 早期实现发的是 {"config":…,"adapter":"caddyfile"} 信封，Caddy 会把整个 body 当配置解析，
+ * 于是报 `json: unknown field "adapter"` 并以 HTTP 400 拒绝 —— 热加载静默失效。
  */
 function caddyReload() {
 	return new Promise((resolve, reject) => {
@@ -1276,15 +1280,16 @@ function caddyReload() {
 			reject(new Error(`读取 /etc/caddy/Caddyfile 失败: ${err.message}`));
 			return;
 		}
-		const body = JSON.stringify({ config: caddyfile, adapter: "caddyfile" });
 		const url = new URL(`${CADDY_ADMIN}/load`);
+		url.searchParams.set("adapter", "caddyfile");
+		const body = caddyfile;
 		const req = http.request(
 			{
 				host: url.hostname,
 				port: url.port || 80,
 				method: "POST",
-				path: url.pathname,
-				headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+				path: url.pathname + url.search,
+				headers: { "content-type": "text/caddyfile", "content-length": Buffer.byteLength(body) },
 				timeout: 20_000,
 			},
 			(res) => {
