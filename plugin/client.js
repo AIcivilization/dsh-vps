@@ -3008,6 +3008,131 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    // ——————————————————————— 插件自己的版本与更新（右上角，和 dsh-vps-manager 一样） ———————————————————————
+
+    const UPDATE_API = '/api/dsh-vps.update'
+
+    function usePluginUpdate() {
+      const [st, setSt] = useState({ info: null, phase: 'checking', asked: false, result: null, started: 0 })
+      const [, tick] = useState(0)
+      useEffect(() => {
+        if (st.phase !== 'updating') return undefined
+        const id = setInterval(() => tick((n) => n + 1), 1000)
+        return () => clearInterval(id)
+      }, [st.phase])
+      const check = useCallback(async (force) => {
+        setSt((x) => ({ ...x, phase: 'checking', asked: x.asked || force }))
+        try {
+          const res = await fetch(`${UPDATE_API}${force ? '?force=1' : ''}`, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
+          if (!res.ok) throw new Error(String(res.status))
+          const info = await res.json()
+          setSt((x) => ({ ...x, info, phase: 'idle', result: null }))
+        } catch {
+          // 旧版 DSH 没有这个接口、或暂时连不上：不弹错，按钮照样在
+          setSt((x) => ({ ...x, phase: 'idle' }))
+        }
+      }, [])
+      useEffect(() => {
+        check(false)
+      }, [check])
+      const run = async () => {
+        const version = st.info?.installable
+        if (!version) return
+        setSt((x) => ({ ...x, phase: 'updating', result: null, started: Date.now() }))
+        try {
+          const res = await fetch(UPDATE_API, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ version }),
+            signal: AbortSignal.timeout(15 * 60_000),
+          })
+          const result = await res.json()
+          setSt((x) => ({ ...x, phase: result.ok ? 'done' : 'failed', result }))
+        } catch (e) {
+          setSt((x) => ({ ...x, phase: 'failed', result: { ok: false, code: 'failed', detail: String(e.message || e), command: `dsh plugin add dsh-vps@${version}` } }))
+        }
+      }
+      return { ...st, elapsed: st.started ? Math.round((Date.now() - st.started) / 1000) : 0, check, run }
+    }
+
+    /** 重启 DSH：Desktop 用宿主的重启；dsh-vps 部署的 VPS 由网关重启（与插件市场「立即重启」同一入口） */
+    async function restartDsh(canDesktop, deployed) {
+      const path = canDesktop ? '/api/dsh-vps.restart' : deployed ? '/dsh-market/restart' : null
+      if (!path) return false
+      const res = await fetch(path, { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(20_000) })
+      return res.ok
+    }
+
+    function PluginUpdateBar({ deployed }) {
+      const upd = usePluginUpdate()
+      const [restarting, setRestarting] = useState(false)
+      const [copied, setCopied] = useState(false)
+      const info = upd.info
+      const failText = {
+        'no-manager': t('这个版本的 DSH 不能在这里装插件，请用下面的命令', 'This DSH cannot install plugins from here; use the command below'),
+        'incompatible-version': t('新版要求的 DSH 版本和你现在用的对不上，先升级 DSH 再更新', 'The new version needs a different DSH version; update DSH first'),
+        timeout: t('下载超时了', 'The download timed out'),
+        cancelled: t('更新被取消了', 'The update was cancelled'),
+      }
+
+      let label = t('检查更新', 'Check for updates')
+      let kind = null
+      let disabled = upd.phase === 'checking'
+      let onClick = () => upd.check(true)
+      if (upd.phase === 'checking') label = t('检查更新…', 'Checking…')
+      else if (upd.phase === 'updating') { label = t(`正在更新…（${upd.elapsed} 秒）`, `Updating… (${upd.elapsed}s)`); disabled = true }
+      else if (upd.phase === 'done') { label = t('已更新，重启后生效', 'Updated; restart to apply'); disabled = true }
+      else if (info?.restartPending) { label = t(`v${info.restartPending} 已装好，重启后生效`, `v${info.restartPending} installed; restart to apply`); disabled = true }
+      else if (info?.available && info.canInstall) { label = t(`更新到 v${info.installable}`, `Update to v${info.installable}`); kind = 'primary'; onClick = () => upd.run() }
+
+      const needsRestart = upd.phase === 'done' || Boolean(info?.restartPending)
+      const canRestart = Boolean(info?.canRestart || upd.result?.canRestart || deployed)
+      const doRestart = async () => {
+        setRestarting(true)
+        try {
+          const ok = await restartDsh(Boolean(info?.canRestart || upd.result?.canRestart), deployed)
+          // 网关重启 DSH 子进程需要几秒；之后刷新页面加载新版插件（网关在 DSH 就绪前会显示启动页）
+          if (ok) setTimeout(() => window.location.reload(), deployed ? 6000 : 3000)
+          else setRestarting(false)
+        } catch {
+          setRestarting(false)
+        }
+      }
+      const status = info?.running
+        ? `dsh-vps v${info.running}` + (upd.asked && upd.phase === 'idle' && !info.available && !info.restartPending
+          ? (info.offline ? t(' · 查不到更新（网络）', ' · could not check (network)') : t(' · 已是最新', ' · up to date'))
+          : '')
+        : null
+      const fail = upd.phase === 'failed' ? upd.result : null
+      const command = fail?.command || (info?.available && !info.canInstall ? info.command : null)
+
+      return h('div', { style: { marginBottom: 10 } },
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          status ? h('span', { style: { ...S.muted, fontSize: 12, whiteSpace: 'nowrap' } }, status) : null,
+          h('button', { type: 'button', style: S.btn(kind, disabled), disabled, onClick }, label),
+          needsRestart && canRestart
+            ? h('button', { type: 'button', style: S.btn('primary', restarting), disabled: restarting, onClick: doRestart },
+              restarting ? t('正在重启…', 'Restarting…') : t('重启 DSH', 'Restart DSH'))
+            : null),
+        needsRestart && !canRestart
+          ? h('div', { style: { ...S.muted, fontSize: 12, textAlign: 'right', marginTop: 4 } }, t('请重启 DSH 让新版本生效。', 'Restart DSH to load the new version.'))
+          : null,
+        fail
+          ? h('div', { style: S.err },
+            h('div', null, t('更新没有成功：', 'The update did not succeed: ') + (failText[fail.code] || fail.code || '')),
+            fail.detail ? h('pre', { style: { ...S.pre, marginTop: 6, color: 'inherit' } }, fail.detail) : null)
+          : null,
+        command
+          ? h('div', { style: { ...S.row, justifyContent: 'flex-end', marginTop: 6 } },
+            h('code', { style: { ...S.code, background: T.layer, borderRadius: 5, padding: '2px 6px' } }, command),
+            h('button', {
+              type: 'button', style: S.btn(),
+              onClick: async () => { setCopied(await copyText(command)); setTimeout(() => setCopied(false), 1500) },
+            }, copied ? t('已复制', 'Copied') : t('复制', 'Copy')))
+          : null)
+    }
+
     function Tabs({ tabs, value, onChange }) {
       return h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, borderBottom: line, marginBottom: 12 } },
         tabs.map(([key, label, danger]) => h('button', {
@@ -3073,6 +3198,7 @@ window.__ModuleLoader__.load({
         ['uninstall', t('从 VPS 卸载', 'Uninstall from a VPS'), true],
       ]
       return h('div', { style: S.root },
+        h(PluginUpdateBar, { deployed }),
         // 一句话说明当前这个 DSH 在哪里运行：两边的页签不同，原因在这里
         h('div', { style: { ...S.note, marginTop: 0, marginBottom: 12 } },
           h('div', null, deployed
