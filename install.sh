@@ -292,7 +292,17 @@ step6_caddy() {
 	if [[ -f /etc/caddy/Caddyfile ]] && ! cmp -s /etc/caddy/Caddyfile /tmp/Caddyfile.dshvps; then
 		cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%s)"
 	fi
+	# 同一台机器上别的产品（比如 vpssh）共用这个 Caddy，会在主 Caddyfile 末尾加自己的 import 行：
+	# 重写时原样保留，不然重装一次 dsh-vps，别的网站就从 Caddy 里消失了
+	local keep=""
+	if [[ -f /etc/caddy/Caddyfile ]]; then
+		keep=$(grep -E '^(import /etc/caddy/|# vpssh：)' /etc/caddy/Caddyfile | grep -vxF "import /etc/caddy/dsh-site.conf" || true)
+	fi
 	install -m 644 /tmp/Caddyfile.dshvps /etc/caddy/Caddyfile
+	if [[ -n "$keep" ]]; then
+		printf '%s\n' "$keep" >>/etc/caddy/Caddyfile
+		log "保留了同机其他网站在 Caddyfile 里的 import 行"
+	fi
 
 	# 站点块：有域名写域名块（自动 HTTPS），无则按公网 IP 写站点、Caddy 内置 CA 自签过渡
 	# 属主 dsh（向导重写）、组 caddy（Caddy 读取）、640
@@ -332,6 +342,7 @@ detect_public_ip() {
 # 域名优先；重装且未传 --domain 时沿用已有配置（含向导改过的域名）；最后回退公网 IP。
 TRUSTED_HOST=""
 CFG_DOMAIN=""
+PUBLIC_IP=""
 resolve_trusted_host() {
 	TRUSTED_HOST="${DOMAIN:-}"
 	local existing_domain=""
@@ -347,6 +358,13 @@ resolve_trusted_host() {
 		TRUSTED_HOST=$(detect_public_ip)
 	fi
 	CFG_DOMAIN="${DOMAIN:-$existing_domain}"
+	# 记下这台机器的公网 IP：设置页里改域名时拿它核对域名解析，改回 IP 访问时也用它
+	if [[ "$TRUSTED_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		PUBLIC_IP="$TRUSTED_HOST"
+	else
+		PUBLIC_IP=$(sed -n 's/.*"publicIp": *"\([^"]*\)".*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1 || true)
+		[[ -n "$PUBLIC_IP" ]] || PUBLIC_IP=$(detect_public_ip 2>/dev/null || true)
+	fi
 }
 
 step7_systemd() {
@@ -372,6 +390,7 @@ EOF
   "dshVersion": "$DSH_VERSION",
   "domain": "$cfg_domain",
   "trustedHost": "$trusted",
+  "publicIp": "$PUBLIC_IP",
   "gatePort": $GATE_PORT,
   "dshPort": $DSH_PORT,
   "mirror": "${MIRROR:-default}",

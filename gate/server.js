@@ -18,6 +18,7 @@
 const http = require("node:http");
 const https = require("node:https");
 const net = require("node:net");
+const dns = require("node:dns").promises;
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -1276,7 +1277,9 @@ function caddyReload() {
 			reject(new Error(`读取 /etc/caddy/Caddyfile 失败: ${err.message}`));
 			return;
 		}
-		const body = JSON.stringify({ config: caddyfile, adapter: "caddyfile" });
+		// /load 收原样的 Caddyfile，用 Content-Type 告诉 Caddy 怎么解析。曾经发的是 {config, adapter} 的 JSON，
+		// 新版 Caddy 直接 400（unknown field "adapter"），配置根本没换上：向导里填了域名就打不开
+		const body = caddyfile;
 		const url = new URL(`${CADDY_ADMIN}/load`);
 		const req = http.request(
 			{
@@ -1284,7 +1287,7 @@ function caddyReload() {
 				port: url.port || 80,
 				method: "POST",
 				path: url.pathname,
-				headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+				headers: { "content-type": "text/caddyfile", "content-length": Buffer.byteLength(body) },
 				timeout: 20_000,
 			},
 			(res) => {
@@ -1335,16 +1338,85 @@ function siteBlock(host) {
 }
 
 async function applyDomainChange(domain) {
+	// Caddy 没换上新配置就什么都不改：放回原来的站点文件、不换访问地址。否则新地址打不开、旧地址也进不去
+	let previous = null;
+	try {
+		previous = fs.readFileSync(CADDY_SITE_FILE, "utf8");
+	} catch {
+		/* 没有旧文件 */
+	}
 	fs.writeFileSync(CADDY_SITE_FILE, siteBlock(domain));
 	try {
 		await caddyReload();
 		log(`caddy reloaded with site ${domain}`);
 	} catch (err) {
-		log(`warn: caddy reload failed: ${err.message}（站点配置已写入，Caddy 重启后生效）`);
+		if (previous !== null) fs.writeFileSync(CADDY_SITE_FILE, previous);
+		log(`caddy reload failed, kept the old address: ${err.message}`);
+		throw new Error(`Caddy ${err.message}`);
 	}
 	dshTrustedHost = domain;
 	persistTrustedHost(domain);
 	restartDsh(`trusted host changed to ${domain}`);
+}
+
+/**
+ * 设置页「访问地址」：装好以后再设域名（初始向导没填的话）、换域名，或者改回用 IP。
+ * 设域名前先查解析：没解析到这台机器就不切——切了新地址打不开、旧地址也进不去。
+ * 真正的切换和向导是同一条路（applyDomainChange：Caddy 没换上就什么都不改）。
+ */
+async function handleDomain(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+	const origin = req.headers.origin;
+	let sameOrigin = false;
+	try {
+		sameOrigin = origin !== void 0 && new URL(origin).host === requestAuthority(req.headers);
+	} catch {
+		/* 非法 Origin */
+	}
+	if (!sameOrigin || String(req.headers["sec-fetch-site"] || "") === "cross-site") return json(403, { error: "cross_origin" });
+	let body;
+	try {
+		body = JSON.parse(await readBody(req, 16 * 1024));
+	} catch {
+		return json(400, { error: "bad_request" });
+	}
+	const domain = String(body?.domain ?? "").trim().toLowerCase();
+	let cfg = {};
+	try {
+		cfg = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "config.json"), "utf8"));
+	} catch {
+		/* 没有 config.json */
+	}
+	// 这台机器的公网 IP：安装时记下的；老版本没记，就看现在或安装时的访问地址是不是 IP
+	const asIp = (h) => (net.isIP(String(h || "")) === 4 ? String(h) : "");
+	const serverIp = cfg.publicIp || asIp(dshTrustedHost) || asIp(cfg.trustedHost);
+	let target;
+	if (domain === "") {
+		if (!serverIp) return json(400, { error: "no_ip" });
+		target = serverIp;
+	} else {
+		if (!DOMAIN_PATTERN.test(domain)) return json(400, { error: "bad_domain" });
+		let ips = [];
+		try {
+			ips = await dns.resolve4(domain);
+		} catch {
+			return json(400, { error: "dns_none", domain });
+		}
+		if (serverIp && !ips.includes(serverIp)) return json(400, { error: "dns_mismatch", domain, ips, serverIp });
+		target = domain;
+	}
+	if (target === dshTrustedHost) return json(200, { ok: true, unchanged: true, url: `https://${target}/` });
+	try {
+		await applyDomainChange(target);
+	} catch (err) {
+		return json(500, { error: "caddy", detail: String(err && err.message).slice(0, 300) });
+	}
+	log(`access address changed by ${user} to ${target}`);
+	return json(200, { ok: true, url: `https://${target}/` });
 }
 
 /**
@@ -2145,6 +2217,7 @@ function main() {
 				}
 				if (pathname === "/gate/update") return handleUpdate(req, res, user);
 				if (pathname === "/gate/password") return handlePassword(req, res, user);
+				if (pathname === "/gate/domain") return handleDomain(req, res, user);
 				if (pathname.startsWith(MARKET_PREFIX) && !marketRequestSameOrigin(req)) {
 					sendText(res, 403, "cross-origin market request refused by gate");
 					return;

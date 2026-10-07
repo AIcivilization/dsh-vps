@@ -2674,6 +2674,81 @@ window.__ModuleLoader__.load({
         health.lastError ? h('div', { style: S.err }, health.lastError) : null)
     }
 
+    /**
+     * 访问地址：装好以后再设域名（初始向导没填的话）、换域名，或者改回用 IP。网关先核对域名解析，
+     * 没解析到这台机器就不切；Caddy 没换上新配置也不切（见 gate/server.js handleDomain）
+     */
+    function AddressRow({ health }) {
+      const current = (health && health.dsh && health.dsh.trustedHost) || ''
+      const usingIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(current)
+      const [open, setOpen] = useState(false)
+      const [domain, setDomain] = useState('')
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState(null)
+      const [done, setDone] = useState('')
+
+      async function submit(value) {
+        setError(null)
+        setBusy(true)
+        try {
+          const res = await fetch('/gate/domain', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ domain: value }),
+            signal: AbortSignal.timeout(60_000),
+          })
+          let body = {}
+          try {
+            body = await res.json()
+          } catch {
+            // 非 JSON
+          }
+          if (!res.ok) {
+            const ips = (body.ips || []).join(t('、', ', '))
+            const messages = {
+              bad_domain: t('域名格式不对。', 'That is not a valid domain.'),
+              dns_none: t(`查不到 ${body.domain} 的解析。先在域名服务商那里加一条 A 记录指向这台服务器，等生效后再来。`, `${body.domain} does not resolve yet. Add an A record pointing to this server at your DNS provider, wait for it to take effect, then try again.`),
+              dns_mismatch: t(`${body.domain} 解析到的是 ${ips}，不是这台服务器（${body.serverIp}）。改好 A 记录、等生效后再来；用 Cloudflare 的话先关掉代理（灰色云朵）。`, `${body.domain} points to ${ips}, not this server (${body.serverIp}). Fix the A record and wait for it to take effect; with Cloudflare, turn the proxy off (grey cloud) first.`),
+              no_ip: t('不知道这台服务器的 IP，没法改回 IP 访问。在服务器上重新执行安装命令即可。', 'The server IP is unknown, so it cannot switch back to the IP. Run the install command on the server again.'),
+              caddy: t(`Caddy 没能换上新地址，什么都没改：${body.detail || ''}`, `Caddy could not switch to the new address; nothing was changed: ${body.detail || ''}`),
+            }
+            throw new Error(messages[body.error] || body.error || `HTTP ${res.status}`)
+          }
+          setDone(body.url)
+          setOpen(false)
+        } catch (err) {
+          setError(String(err.message || err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      if (done) {
+        return h('div', { style: S.note },
+          t('已切换。打开新地址重新登录：', 'Switched. Open the new address and sign in again: '),
+          h('a', { href: done, style: { color: T.accent } }, done),
+          h('div', { style: { ...S.muted, fontSize: 12 } }, t('用域名时第一次打开要等几十秒签发证书。', 'With a domain, the first visit waits a few tens of seconds for the certificate.')))
+      }
+      return h('div', { style: { marginTop: 8 } },
+        h('div', { style: S.row },
+          h('span', { style: S.muted }, t('访问地址：', 'Address: ')),
+          h('span', { style: S.code }, current ? `https://${current}/` : '—'),
+          open ? null : h('button', { type: 'button', style: S.btn(), onClick: () => { setOpen(true); setError(null) } }, usingIp ? t('设置域名', 'Set a domain') : t('换域名', 'Change domain')),
+          !usingIp && !open
+            ? h('button', { type: 'button', style: S.btn(null, busy), disabled: busy, onClick: () => window.confirm(t('改回用 IP 访问？之后浏览器会提示证书不安全。', 'Switch back to the IP? Browsers will then warn about the certificate.')) && submit('') }, t('改回用 IP', 'Use the IP'))
+            : null),
+        open
+          ? h('div', { style: { marginTop: 8, maxWidth: 420 } },
+            h(Field, { label: t('域名', 'Domain'), hint: t('先在域名服务商那里把 A 记录指向这台服务器；云服务商安全组放行 80、443。保存后旧地址就不用了，要在新地址重新登录。', 'First point its A record at this server, and allow 80 and 443 in your cloud security group. After saving, the old address stops being used; sign in again at the new one.') },
+              h('input', { value: domain, onChange: (e) => setDomain(e.target.value), placeholder: 'dsh.example.com', style: inputStyle })),
+            h('div', { style: { ...S.row, marginTop: 8 } },
+              h('button', { type: 'button', style: S.btn('primary', busy || !domain.trim()), disabled: busy || !domain.trim(), onClick: () => submit(domain.trim()) }, busy ? t('检查并切换中…', 'Checking and switching…') : t('保存', 'Save')),
+              h('button', { type: 'button', style: S.btn(), onClick: () => { setOpen(false); setError(null) } }, t('取消', 'Cancel'))))
+          : null,
+        error ? h('div', { style: S.err }, error) : null)
+    }
+
     /** 管理员账号：平时一行；点「修改密码」展开表单（要当前密码） */
     function AccountCard({ health }) {
       const [open, setOpen] = useState(false)
@@ -2739,6 +2814,7 @@ window.__ModuleLoader__.load({
             h('span', { style: S.h2 }, t('账号', 'Account')),
             h('span', { style: { ...S.muted, marginLeft: 10 } }, t('管理员：', 'Admin: '), h('span', { style: S.code }, health?.admin || '—'))),
           open ? null : h('button', { type: 'button', style: S.btn(), onClick: () => { setOpen(true); setDone(false) } }, t('修改密码', 'Change password'))),
+        h(AddressRow, { health }),
         done ? h('div', { style: S.note }, t('密码已修改。这台设备保持登录；其他设备（包括手机）上的登录已失效，需要用新密码重新登录。',
           'Password changed. This device stays signed in; every other device (phones included) is signed out and needs the new password.')) : null,
         open
