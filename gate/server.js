@@ -139,12 +139,13 @@ const MARKET_RESTART_PATHS = new Set(["/dsh-market/restart", "/dsh-market/restar
 const MARKET_RESTART_V1_PATHS = new Set(["/dsh-market/api/v1/restart", "/dsh-market/api/v1/restart/"]);
 const MARKET_V1_SCHEMA = "dsh-market/update-api/v1";
 
-// dshmarket 的写操作（安装/更新/卸载/备份导出……）为防 DNS 重绑定，要求 Host 必须是回环地址，
-// Origin 必须与 Host 一致；经 gate 转发时 Host 是公网域名，于是一律 403 "untrusted origin"。
-// gate 已完成登录校验，这里替它做同样的同源检查（Origin 与公网 Host 一致、非跨站），
-// 通过后把 Host/Origin 改写成 DSH 的回环地址再转发。设 GATE_MARKET_LOOPBACK=0 可关闭。
+// 原则：gate 对 DSH 是透明的——Host/Origin 按浏览器发来的原样转发（公网域名），DSH 以
+// --trusted-host 声明这个域名，DSH 自己和用它请求围栏的插件（dshmarket 1.66+）就都认。
+// 不再替某个插件把 Host 改写成 127.0.0.1：改写后 DSH 的登录 Cookie（按 authority 签发）、
+// 插件的同源检查都会对不上，修一处冒一处。gate 仍对 /dsh-market/ 先做一次同源检查。
+// 旧版 dshmarket（只认回环 Host）可设 GATE_MARKET_LOOPBACK=1 退回改写（届时注入回环那份会话）。
 const MARKET_PREFIX = "/dsh-market/";
-const MARKET_LOOPBACK = process.env.GATE_MARKET_LOOPBACK !== "0";
+const MARKET_LOOPBACK = process.env.GATE_MARKET_LOOPBACK === "1";
 // 设 GATE_TAKEOVER_RESTART=0 则放行给 DSH 自己处理（会退回到上面那个坑，仅供对照排障）
 const TAKEOVER_RESTART = process.env.GATE_TAKEOVER_RESTART !== "0";
 
@@ -435,6 +436,10 @@ const dsh = {
 	child: null,
 	token: null, // 当前进程的 launchToken
 	cookie: null, // { name, value, expiresAt, authority }
+	// 本机地址（127.0.0.1:DSH_PORT）的 DSH 会话：插件市场的请求被改写成回环 Host（旧版 dshmarket
+	// 只认回环），而 DSH 的会话 Cookie 按 authority 签发——新版 dshmarket 交给 DSH 做登录校验，
+	// 注入域名的 Cookie 会被判为未登录（「需要先登录 DSH」）。所以回环请求注入这一份。
+	loopCookie: null,
 	restarts: 0,
 	cookieAcquired: false, // 当前子进程是否兑换成功过（区分"启动即崩"与"运行后退出"）
 	startedAt: 0,
@@ -473,6 +478,7 @@ function restartDsh(reason) {
 	log(`restarting dsh${reason ? ` (${reason})` : ""}`);
 	dsh.token = null;
 	dsh.cookie = null;
+	dsh.loopCookie = null;
 	dsh.lastError = null;
 	dsh.lastExchangeError = null;
 	clearTimeout(exchangeTimer);
@@ -493,6 +499,7 @@ function spawnDsh() {
 	dsh.startedAt = Date.now();
 	dsh.token = null;
 	dsh.cookie = null;
+	dsh.loopCookie = null;
 	dsh.cookieAcquired = false;
 
 	let scanBuf = "";
@@ -518,6 +525,7 @@ function spawnDsh() {
 			dsh.child = null;
 			dsh.token = null;
 			dsh.cookie = null;
+			dsh.loopCookie = null;
 			clearTimeout(exchangeTimer);
 			if (!dsh.shuttingDown) {
 				const uptimeMs = Date.now() - dsh.startedAt;
@@ -605,10 +613,11 @@ function retryExchange(attempt, why) {
 	exchangeTimer = setTimeout(() => exchangeToken(attempt + 1), delay);
 }
 
-function applyDshCookie(setCookieLine) {
+/** 解析一条 DSH Set-Cookie：{ name, value, expiresAt }；格式不对返回 null */
+function parseDshCookie(setCookieLine) {
 	const [pair, ...attrs] = setCookieLine.split(";");
 	const eq = pair.indexOf("=");
-	if (eq === -1) return;
+	if (eq === -1) return null;
 	const name = pair.slice(0, eq).trim();
 	const value = pair.slice(eq + 1).trim();
 	let expiresAt = Date.now() + 30 * 86_400_000;
@@ -625,12 +634,45 @@ function applyDshCookie(setCookieLine) {
 			if (Number.isFinite(n)) expiresAt = Date.now() + n * 1000;
 		}
 	}
+	return { name, value, expiresAt };
+}
+
+const LOOPBACK_AUTHORITY = `127.0.0.1:${DSH_PORT}`;
+
+/** 用同一个 launchToken 再换一份回环 authority 的会话（插件市场用）；失败只记日志 */
+function exchangeLoopback(token) {
+	const req = http.request(
+		{ host: DSH_HOST, port: DSH_PORT, method: "GET", path: `/?token=${token}`, headers: { host: LOOPBACK_AUTHORITY }, timeout: 5000 },
+		(res) => {
+			res.resume();
+			const line = res.statusCode === 303 && dsh.token === token
+				? (res.headers["set-cookie"] || []).find((c) => c.startsWith(DSH_COOKIE_PREFIX))
+				: void 0;
+			const parsed = line ? parseDshCookie(line) : null;
+			if (parsed) {
+				dsh.loopCookie = { ...parsed, authority: LOOPBACK_AUTHORITY };
+				log(`dsh loopback session cookie acquired (authority=${LOOPBACK_AUTHORITY})`);
+			} else {
+				log(`warn: loopback session exchange failed (status ${res.statusCode}); plugin market may report "login required"`);
+			}
+		},
+	);
+	req.on("timeout", () => req.destroy(new Error("exchange timeout")));
+	req.on("error", (err) => log(`warn: loopback session exchange failed: ${err.message}`));
+	req.end();
+}
+
+function applyDshCookie(setCookieLine) {
+	const parsed = parseDshCookie(setCookieLine);
+	if (!parsed) return;
+	const { name, value, expiresAt } = parsed;
 	dsh.cookie = { name, value, expiresAt, authority: authorityOf(dshTrustedHost) };
 	dsh.cookieAcquired = true;
 	dsh.lastExchangeError = null;
 	dsh.lastError = null;
 	dsh.crashStreak = 0;
 	log(`dsh session cookie acquired (authority=${dsh.cookie.authority}, expires=${new Date(expiresAt).toISOString()})`);
+	if (dsh.token) exchangeLoopback(dsh.token);
 }
 
 /** 构造发往 DSH 的 Cookie 头：剥离客户端的 dsh-auth-*（防伪）与 gate 自身会话，注入服务端 DSH Cookie（仅 authority 匹配时）。 */
@@ -640,8 +682,12 @@ function upstreamCookieHeader(clientCookieHeader, authority) {
 		if (key === SESSION_COOKIE || key.startsWith(DSH_COOKIE_PREFIX)) continue;
 		parts.push(`${key}=${value}`);
 	}
-	if (dsh.cookie && authority !== void 0 && dsh.cookie.authority === authority && dsh.cookie.expiresAt > Date.now()) {
-		parts.push(`${dsh.cookie.name}=${dsh.cookie.value}`);
+	// 按请求实际发往的 authority 选会话：域名请求用域名的，改写成回环的插件市场请求用回环的
+	for (const c of [dsh.cookie, dsh.loopCookie]) {
+		if (c && authority !== void 0 && c.authority === authority && c.expiresAt > Date.now()) {
+			parts.push(`${c.name}=${c.value}`);
+			break;
+		}
 	}
 	return parts.length ? parts.join("; ") : void 0;
 }
@@ -997,9 +1043,12 @@ function proxyHttp(req, res) {
 	const cookie = upstreamCookieHeader(req.headers.cookie, authority);
 	if (cookie !== void 0) headers.cookie = cookie;
 	if (MARKET_LOOPBACK && (req.url || "").startsWith(MARKET_PREFIX)) {
-		const loopback = `127.0.0.1:${DSH_PORT}`;
-		headers.host = loopback;
-		if (headers.origin !== void 0) headers.origin = `http://${loopback}`;
+		headers.host = LOOPBACK_AUTHORITY;
+		if (headers.origin !== void 0) headers.origin = `http://${LOOPBACK_AUTHORITY}`;
+		// 会话跟着 Host 换成回环那份（新版 dshmarket 交给 DSH 校验登录）
+		const loopCookie = upstreamCookieHeader(req.headers.cookie, LOOPBACK_AUTHORITY);
+		if (loopCookie !== void 0) headers.cookie = loopCookie;
+		else delete headers.cookie;
 	}
 
 	let responded = false;
