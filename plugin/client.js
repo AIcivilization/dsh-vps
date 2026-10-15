@@ -2956,11 +2956,69 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', style: S.btn(), onClick: onReset }, job.state === 'success' ? t('完成', 'Done') : t('返回修改', 'Back to the form'))))
     }
 
+    const SSHKEY_API = '/api/dsh-vps.sshkey'
+
+    /** 加公钥到服务器的一行命令：在云厂商控制台的网页终端里执行（公钥只含 base64 与注释，单引号安全） */
+    function authorizeKeyCommand(publicKey) {
+      const safe = String(publicKey).replace(/'/g, '')
+      return `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${safe}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`
+    }
+
+    /** 本机密钥：显示（或生成）本插件专用的公钥，一键复制；私钥留在这台电脑上 */
+    function LocalKeyPanel() {
+      const [st, setSt] = useState({ loading: true, publicKey: null, error: null, busy: false })
+      const load = useCallback(async (method) => {
+        setSt((x) => ({ ...x, busy: method === 'POST', error: null }))
+        try {
+          const res = await fetch(SSHKEY_API, { method, credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(30_000) })
+          const data = await res.json().catch(() => ({}))
+          setSt({ loading: false, busy: false, publicKey: data.publicKey || null, error: res.ok ? null : (data.error || `HTTP ${res.status}`) })
+        } catch (err) {
+          setSt({ loading: false, busy: false, publicKey: null, error: String(err.message || err) })
+        }
+      }, [])
+      useEffect(() => { load('GET') }, [load])
+      if (st.loading) return h('div', { style: S.muted }, t('读取中…', 'Loading…'))
+      return h('div', { style: S.note },
+        st.publicKey
+          ? h('div', null,
+            h('div', null, t('第一步：把这台电脑的公钥加到服务器上（只需一次）。在云厂商控制台打开服务器的网页终端（VNC / 远程连接），粘贴执行：',
+              'Step 1: add this computer\'s public key to the server (once). Open the server\'s web console in your cloud provider (VNC / remote connection) and run:')),
+            h(CopyLine, { text: authorizeKeyCommand(st.publicKey) }),
+            h('div', { style: { marginTop: 8 } }, t('或者在云厂商控制台的「SSH 密钥」里导入下面这个公钥，再绑定到这台服务器：',
+              'Or import this public key under "SSH keys" in your cloud provider\'s console and attach it to the server:')),
+            h(CopyLine, { text: st.publicKey }),
+            h('div', { style: { marginTop: 8 } }, t('第二步：点下面的按钮安装。这台电脑 ~/.ssh 里原有的密钥也会一并尝试。',
+              'Step 2: click the button below. Keys already in ~/.ssh on this computer are tried as well.')),
+            h('div', { style: { ...S.muted, fontSize: 12, marginTop: 4 } }, t('私钥只保存在这台电脑上，不会上传到任何地方。',
+              'The private key stays on this computer and is never uploaded.')))
+          : h('div', null,
+            h('div', null, t('这台电脑还没有 dsh-vps 专用的密钥。生成一把后，把公钥加到服务器上，以后就能免密码登录（~/.ssh 里已有的密钥也会自动尝试）。',
+              'This computer has no dsh-vps key yet. Generate one, add its public key to the server, and log in without a password from then on (existing keys in ~/.ssh are tried too).')),
+            h('div', { style: { ...S.row, marginTop: 8 } },
+              h('button', { type: 'button', style: S.btn('primary', st.busy), disabled: st.busy, onClick: () => load('POST') },
+                st.busy ? t('生成中…', 'Generating…') : t('生成本机密钥', 'Generate a key')))),
+        st.error ? h('div', { style: S.err }, st.error) : null)
+    }
+
+    function AuthPicker({ value, onChange }) {
+      const opts = [
+        ['password', t('密码', 'Password')],
+        ['key', t('私钥', 'Private key')],
+        ['local', t('本机密钥', 'This computer\'s key')],
+      ]
+      return h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+        opts.map(([key, label]) => h('button', {
+          key, type: 'button', onClick: () => onChange(key),
+          style: { ...S.btn(value === key ? 'primary' : null), padding: '6px 12px' },
+        }, label)))
+    }
+
     function DeployForm({ mode, deployedHost }) {
       const [avail, setAvail] = useState('loading') // loading | yes | no
       const [job, setJob] = useState(null)
       const [showForm, setShowForm] = useState(true)
-      const [form, setForm] = useState({ host: '', port: '22', user: 'root', password: '', domain: '', mirror: false, keepData: true, purgeCaddy: false })
+      const [form, setForm] = useState({ host: '', port: '22', user: 'root', auth: 'password', password: '', privateKey: '', passphrase: '', domain: '', mirror: false, keepData: true, purgeCaddy: false })
       const [error, setError] = useState(null)
       const [busy, setBusy] = useState(false)
       const [manual, setManual] = useState(false)
@@ -3005,6 +3063,8 @@ window.__ModuleLoader__.load({
         e.preventDefault()
         setError(null)
         if (!form.host.trim()) return setError(t('请填写服务器 IP 或域名', 'Enter the server IP or hostname'))
+        if (form.auth === 'password' && !form.password) return setError(t('请填写服务器的登录密码', 'Enter the server login password'))
+        if (form.auth === 'key' && !form.privateKey.trim()) return setError(t('请粘贴私钥，或选择私钥文件', 'Paste a private key or choose a key file'))
         const target = `${form.user || 'root'}@${form.host.trim()}`
         const msg = un
           ? t(
@@ -3017,7 +3077,7 @@ window.__ModuleLoader__.load({
         setBusy(true)
         try {
           const r = await installApi('POST', { ...form, action: mode, port: Number(form.port) || 22 })
-          setForm((f) => ({ ...f, password: '' })) // 密码不在页面里多留
+          setForm((f) => ({ ...f, password: '', privateKey: '', passphrase: '' })) // 密码、私钥不在页面里多留
           setJob(r.job)
           setShowForm(false)
           poll()
@@ -3030,7 +3090,25 @@ window.__ModuleLoader__.load({
 
       if (avail === 'loading') return h('div', { style: S.muted }, t('读取中…', 'Loading…'))
       if (avail === 'no') return h(ManualCommand)
-      if (!showForm && job) return h(InstallProgress, { job, onReset: () => { setShowForm(true); setError(null) } })
+      if (!showForm && job) {
+        return h(InstallProgress, {
+          job,
+          onReset: () => {
+            setShowForm(true)
+            setError(null)
+            // 服务器只认密钥：回到表单时直接切到「私钥」
+            if (/只认密钥/.test(String(job.error || '')) && form.auth === 'password') setForm((f) => ({ ...f, auth: 'key' }))
+          },
+        })
+      }
+
+      const pickKeyFile = (e) => {
+        const file = e.target.files && e.target.files[0]
+        e.target.value = ''
+        if (!file) return
+        if (file.size > 64 * 1024) return setError(t('这个文件太大，不像私钥', 'That file is too large to be a private key'))
+        file.text().then((text) => setForm((f) => ({ ...f, privateKey: text })), () => setError(t('读不了这个文件', 'Could not read that file')))
+      }
 
       return h('form', { onSubmit: submit },
         un && deployedHost
@@ -3051,8 +3129,29 @@ window.__ModuleLoader__.load({
             h(Field, { label: t('用户名', 'Username'), hint: t('建议用 root；其他用户需要免密 sudo', 'root recommended; other users need passwordless sudo') },
               h('input', { style: inputStyle, value: form.user, onChange: set('user'), autoComplete: 'off', spellCheck: false }))),
           h('div', { style: { flex: '1 1 200px', minWidth: 0 } },
-            h(Field, { label: t('密码', 'Password'), hint: t('只用这一次，不保存；留空则用本机已有的 SSH 密钥', 'Used once, never stored; leave empty to use your existing SSH key') },
-              h('input', { style: inputStyle, type: 'password', value: form.password, onChange: set('password'), placeholder: t('服务器的登录密码', 'server login password'), autoComplete: 'new-password' })))),
+            h('div', { style: { fontSize: 12, opacity: 0.75, marginBottom: 3 } }, t('登录方式', 'Log in with')),
+            h(AuthPicker, { value: form.auth, onChange: (auth) => setForm((f) => ({ ...f, auth })) }))),
+        form.auth === 'password'
+          ? h('div', { style: { marginTop: 12 } },
+            h(Field, { label: t('密码', 'Password'), hint: t('只用这一次，不保存。服务器关掉了密码登录时，改用「私钥」或「本机密钥」', 'Used once, never stored. If the server has password login disabled, use a private key or this computer\'s key') },
+              h('input', { style: inputStyle, type: 'password', value: form.password, onChange: set('password'), placeholder: t('服务器的登录密码', 'server login password'), autoComplete: 'new-password' })))
+          : null,
+        form.auth === 'key'
+          ? h('div', { style: { marginTop: 12 } },
+            h(Field, { label: t('私钥', 'Private key'), hint: t('云厂商创建或重装服务器时下载的 .pem 文件，或你自己的 id_ed25519 / id_rsa 的全部内容。只用这一次，不保存', 'The .pem file your cloud provider gave you when creating or reinstalling the server, or the full contents of your own id_ed25519 / id_rsa. Used once, never stored') },
+              h('textarea', {
+                style: { ...inputStyle, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, minHeight: 96, resize: 'vertical' },
+                value: form.privateKey, onChange: set('privateKey'), spellCheck: false, autoComplete: 'off',
+                placeholder: '-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----',
+              })),
+            h('div', { style: { ...S.row, marginTop: 6 } },
+              h('label', { style: { ...S.btn(), display: 'inline-block' } }, t('选择私钥文件…', 'Choose key file…'),
+                h('input', { type: 'file', onChange: pickKeyFile, style: { display: 'none' } }))),
+            h('div', { style: { marginTop: 10 } },
+              h(Field, { label: t('私钥口令（可选）', 'Key passphrase (optional)'), hint: t('私钥设过口令才填', 'Only if the key has a passphrase') },
+                h('input', { style: inputStyle, type: 'password', value: form.passphrase, onChange: set('passphrase'), autoComplete: 'new-password' }))))
+          : null,
+        form.auth === 'local' ? h('div', { style: { marginTop: 12 } }, h(LocalKeyPanel)) : null,
         un
           ? h('div', null,
             h('label', { style: { ...S.check, marginTop: 12 } },

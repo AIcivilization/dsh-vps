@@ -9,12 +9,13 @@
 // 安装接口挂在 DSH 的 /api 通道（ctx.connection.fetch）：DSH 自己做 Host/Origin 围栏与
 // 登录校验，跨站网页调不到。connection 服务缺席（旧版 DSH）时不注册，界面退回「复制命令」。
 
-import { createInstaller, validateRequest } from './remote-install.mjs'
+import { createInstaller, generateLocalKey, readLocalKey, validateRequest } from './remote-install.mjs'
 import { checkUpdate, runUpdate } from './update.mjs'
 
 export const name = 'dsh-vps'
 
 const INSTALL_PATH = '/api/dsh-vps.install'
+const SSHKEY_PATH = '/api/dsh-vps.sshkey'
 const UPDATE_PATH = '/api/dsh-vps.update'
 const RESTART_PATH = '/api/dsh-vps.restart'
 
@@ -66,6 +67,20 @@ export function apply(ctx) {
       })
     } catch (error) {
       ctx.logger?.warn?.(`[dsh-vps] 安装接口注册失败：${error?.message ?? error}`)
+    }
+    // 本机专用 SSH 密钥：GET 取公钥（没有则 publicKey 为 null），POST 生成。私钥不出这台机器
+    try {
+      fetchApi.register({
+        path: SSHKEY_PATH,
+        methods: ['GET', 'POST'],
+        requestBody: 'buffered',
+        fetch: async (request) => {
+          const r = request.method === 'POST' ? await generateLocalKey() : await readLocalKey()
+          return json({ publicKey: r.publicKey, ...(r.error ? { error: r.error } : {}) }, r.error ? 500 : 200)
+        },
+      })
+    } catch (error) {
+      ctx.logger?.warn?.(`[dsh-vps] 密钥接口注册失败：${error?.message ?? error}`)
     }
     // 插件自己的更新：GET 查（?force=1 马上重查），POST { version } 装
     try {

@@ -26,7 +26,7 @@
 
 > **A VPS deployment tool for DSH: it puts stock DSH, behind a login page, on your own VPS so you can use it from any browser.** Pick either way to install:
 
-**① From a form in the DSH on your own computer**: install the `dsh-vps` plugin from the plugin market (or run `dsh plugin add dsh-vps`), open **Settings → VPS Deploy**, enter the server IP, SSH port, username and password (plus a domain if you have one), and click "Install on this VPS".
+**① From a form in the DSH on your own computer**: install the `dsh-vps` plugin from the plugin market (or run `dsh plugin add dsh-vps`), open **Settings → VPS Deploy**, enter the server IP, SSH port and username, pick how to log in (password / private key / this computer's key), plus a domain if you have one, and click "Install on this VPS".
 
 **② With one command on the VPS**:
 
@@ -113,10 +113,11 @@ dsh-vps puts a zero-dependency login gateway (dsh-gate) in front of DSH: public 
 Works with DSH on Mac, Windows and Linux:
 
 1. Add the `dsh-vps` plugin to DSH: search the plugin market, or run `dsh plugin add dsh-vps`
-2. Open **Settings → VPS Deploy** and enter the server IP, SSH port, username and password; add a domain if its A record already points at the server, and tick "Server is in mainland China" if it is
+2. Open **Settings → VPS Deploy** and enter the server IP, SSH port and username and pick how to log in; add a domain if its A record already points at the server, and tick "Server is in mainland China" if it is
 3. Click "Install on this VPS"
 
-- The password is used once and never stored; leave it empty to use your existing SSH key
+- Three ways to log in: **password**; **private key** (paste or choose the .pem from your cloud provider or your own id_ed25519, passphrase optional); **this computer's key** (generate a dedicated key with one click, then copy the public key — or the ready-made command — into your provider's web console once; keys already in ~/.ssh are tried too). Use one of the key options when the server has password login disabled (common after an OS reinstall)
+- Passwords and pasted keys are used once and never stored; the dedicated key's private half stays on your computer
 - The page streams the install log and ends with the setup-wizard link
 - The install runs in the background on the server, so closing the page or losing the connection does not stop it
 - Needs an OpenSSH client on your computer: built into macOS and Linux; on Windows 10/11 add "OpenSSH Client" under Settings → System → Optional features
