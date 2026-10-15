@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/AIcivilization/dsh-vps" alt="MIT 许可证"></a>
   <a href="https://www.npmjs.com/package/dsh-vps"><img src="https://img.shields.io/npm/v/dsh-vps" alt="npm 版本"></a>
   <img src="https://img.shields.io/badge/platform-Ubuntu%2022.04%2B%20%2F%20Debian%2012%2B-blue" alt="平台：Ubuntu 22.04+ / Debian 12+">
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.7--rc.1-4176E6" alt="DeepSeek Harness 0.1.7-rc.1">
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-%E5%AE%98%E6%96%B9%E6%9C%80%E6%96%B0%E7%89%88-4176E6" alt="DeepSeek Harness 官方最新版">
   <img src="https://img.shields.io/badge/runtime%20dependencies-0-brightgreen" alt="运行时依赖：0">
   <img src="https://img.shields.io/badge/Docker-not%20required-orange" alt="无需 Docker">
   <img src="https://img.shields.io/github/stars/AIcivilization/dsh-vps?style=social" alt="star">
@@ -165,6 +165,8 @@ curl -fsSL https://raw.githubusercontent.com/AIcivilization/dsh-vps/v1.7.0/insta
 安装末尾的自检若报「DSH 尚未就绪」，设置链接照样会打印；页面会显示启动进度与具体错误，排障见 `journalctl -u dsh-gate -n 80 --no-pager`。
 
 ## 更新
+
+**新装直接是官方最新版。** 安装时取 npm 上官方最新版（与下面的升级提示同一规则：latest 与 next 中较新、发布满 12 小时）；万一装不上或装好起不来，自动退回本项目验证过的版本。想指定版本：安装命令末尾加 `--dsh <版本>`，或 `--dsh verified` 装验证过的版本。
 
 **DSH 本身跟随官方版本升级。** 网关每 6 小时检查一次 npm 上的官方最新版（正式渠道 latest 与预览渠道 next 中较新的一个），有新版本时 DSH 页面右下角弹出提示（也可以在「设置 → VPS 部署」里查看和操作），点「立即升级」并确认即可：自动备份 → 安装新版 → 自检，自检不通过自动回滚到原版本，全程约 1–3 分钟。点「稍后」则这个版本不再提示。新版本发布满 12 小时后才会提示——上游常有“主包先发、子包几小时后才补齐”的情况，刚发布就升级只会装失败。也可以在服务器上手动执行：
 

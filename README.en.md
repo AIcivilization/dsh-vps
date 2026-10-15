@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/AIcivilization/dsh-vps" alt="MIT license"></a>
   <a href="https://www.npmjs.com/package/dsh-vps"><img src="https://img.shields.io/npm/v/dsh-vps" alt="npm version"></a>
   <img src="https://img.shields.io/badge/platform-Ubuntu%2022.04%2B%20%2F%20Debian%2012%2B-blue" alt="Platform: Ubuntu 22.04+ / Debian 12+">
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.7--rc.1-4176E6" alt="DeepSeek Harness 0.1.7-rc.1">
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-latest%20official-4176E6" alt="DeepSeek Harness latest official">
   <img src="https://img.shields.io/badge/runtime%20dependencies-0-brightgreen" alt="Runtime dependencies: 0">
   <img src="https://img.shields.io/badge/Docker-not%20required-orange" alt="No Docker required">
   <img src="https://img.shields.io/github/stars/AIcivilization/dsh-vps?style=social" alt="star">
@@ -155,6 +155,8 @@ curl -fsSL https://raw.githubusercontent.com/AIcivilization/dsh-vps/v1.7.0/insta
 If the final self-check reports that DSH is not ready yet, the setup link is still printed; the page shows startup progress and the actual error. Troubleshoot with `journalctl -u dsh-gate -n 80 --no-pager`.
 
 ## Update
+
+**New installs get the latest official DSH.** The installer takes the newest official version on npm (same rule as the upgrade prompt below: the higher of `latest` and `next`, published at least 12 hours ago); if it fails to install or start, it falls back to the version verified by this project automatically. To choose a version, append `--dsh <version>` to the install command, or `--dsh verified` for the verified one.
 
 **DSH itself follows official releases.** The gateway checks npm for the newest official version (the higher of the `latest` and `next` channels) every 6 hours. When a newer one exists, a prompt appears in the bottom-right corner of the DSH page (also available under Settings → VPS Deploy); click "Upgrade now" and confirm. It backs up, installs the new version and runs a self-check, rolling back to the previous version automatically if the check fails — about 1–3 minutes in all. "Later" silences that version. A release is offered only 12 hours after it is published — upstream sometimes publishes the main package hours before its sub-packages, and upgrading in that window just fails. From the server you can also run:
 

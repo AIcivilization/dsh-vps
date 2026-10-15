@@ -2972,7 +2972,13 @@ window.__ModuleLoader__.load({
         try {
           const res = await fetch(SSHKEY_API, { method, credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(30_000) })
           const data = await res.json().catch(() => ({}))
-          setSt({ loading: false, busy: false, publicKey: data.publicKey || null, error: res.ok ? null : (data.error || `HTTP ${res.status}`) })
+          // 404：页面已是新版，DSH 后台还在跑更新前的插件（装好新版没重启）
+          const stale = res.status === 404 || (res.ok && !('publicKey' in data))
+          const error = stale
+            ? t('DSH 还在运行更新前的插件，生成不了密钥：完全退出 DSH 再打开（桌面版点右上角的重启），然后再点一次。',
+              'DSH is still running the plugin from before the update, so no key can be generated: quit and reopen DSH (or use Restart in the desktop app), then try again.')
+            : res.ok ? null : (data.error || `HTTP ${res.status}`)
+          setSt({ loading: false, busy: false, publicKey: data.publicKey || null, error })
         } catch (err) {
           setSt({ loading: false, busy: false, publicKey: null, error: String(err.message || err) })
         }

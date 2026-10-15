@@ -16,7 +16,15 @@ set -euo pipefail
 
 ## region: 常量与参数
 
-DSH_VERSION="0.1.7-rc.1" # 钉住版本（设计文档 §10 已验证版本表，勿随意改）
+# 默认装官方最新版：npm latest 与 next 渠道里版本号更高、且发布满 12 小时的那个——与网关页面
+# 「有新版本」提示、dsh-vps upgrade --latest 同一规则（alpha 等内部渠道不取）。
+# 以前钉死一个版本，新装的机器一上来就是旧版，还得再点一次升级。
+# 最新版装不上、或装好后起不来，自动退回下面这个验证过的版本（其依赖树按时间点冻结，必定能装）。
+# 显式指定：--dsh <版本> 或 --dsh verified；环境变量 DSH_VERSION 同效。
+DSH_VERIFIED="0.1.7-rc.1" # 已验证版本（versions.json 的 latest_verified）
+DSH_VERSION="${DSH_VERSION:-}"
+UPGRADE_COOLDOWN_HOURS=12
+LAST_HEALTH=""
 # 只钉顶层包版本是不够的：DSH 各子包的依赖是 ^0.1.5-rc.2 这类浮动范围，上游一发新的
 # 预发布波次，解析结果就整体漂上去。2026-09-22 上游发了 0.1.5-rc.3 波次，但漏发了
 # dsh-client-ui-sidebar-documentpreview，于是 ETARGET 装不上。用 --before 把解析冻结在
@@ -25,7 +33,7 @@ DSH_VERSION="0.1.7-rc.1" # 钉住版本（设计文档 §10 已验证版本表�
 # 与 rc.2 不兼容——web profile 启动即报 "user patch-layer watching requires the Cordis HMR service"。
 # 冻结点必须早于这一批，所以是 03:40 而不是 05:00。
 # 之后升到 0.1.7-rc.1（npm next 渠道），冻结点 2026-09-24T08:20Z——该时刻解析出的依赖树已逐包比对、实测通过。
-# 设为 none 可关闭冻结。
+# 冻结只用于已验证版本；官方最新版按当下解析（与页面一键升级一致）。设为 none 可关闭冻结。
 DSH_RESOLVE_BEFORE="${DSH_RESOLVE_BEFORE:-2026-09-24T08:20:00Z}"
 INSTALL_ROOT="/opt/dsh-vps"
 DSH_USER="dsh"
@@ -45,9 +53,10 @@ die()  { printf '\033[1;31m[install]\033[0m %s\n' "$*" >&2; exit 1; }
 usage() {
 	cat <<'EOF'
 dsh-vps 安装脚本
-用法: sudo bash install.sh [--domain <域名>] [--mirror cn]
+用法: sudo bash install.sh [--domain <域名>] [--mirror cn] [--dsh <版本>|verified]
   --domain <域名>   访问域名（需已解析到本机）。不传则以公网 IP + 自签证书过渡
   --mirror cn       国内镜像：Node 走 npmmirror 二进制，DSH 走 npmmirror registry
+  --dsh <版本>      指定 DSH 版本；verified 表示 dsh-vps 验证过的版本。默认官方最新版
 EOF
 }
 
@@ -55,12 +64,16 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--domain) DOMAIN="${2:?--domain 需要一个值}"; shift 2 ;;
 	--mirror) MIRROR="${2:?--mirror 需要一个值}"; shift 2 ;;
+	--dsh) DSH_VERSION="${2:?--dsh 需要一个值}"; shift 2 ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "未知参数: $1（--help 查看用法）" ;;
 	esac
 done
 
 [[ "$MIRROR" == "" || "$MIRROR" == "cn" ]] || die "--mirror 目前仅支持 cn"
+[[ "$DSH_VERSION" == "verified" ]] && DSH_VERSION="$DSH_VERIFIED"
+[[ -z "$DSH_VERSION" || "$DSH_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "--dsh 版本号格式不对: $DSH_VERSION"
+DSH_PICKED_BY="指定"
 if [[ -n "$DOMAIN" ]]; then
 	[[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
 		|| die "域名格式不合法: $DOMAIN"
@@ -187,31 +200,85 @@ step2_node() {
 
 ## region: 步骤 3：DSH 版本化安装
 
-step3_dsh() {
-	log "步骤 3/9：DeepSeek Harness ${DSH_VERSION}（版本化安装）"
-	local prefix="$INSTALL_ROOT/dsh/$DSH_VERSION"
+# 官方最新版：latest / next 中版本号更高、发布满冷静期的；查不到输出空
+newest_dsh() {
+	local reg=()
+	[[ "$MIRROR" == "cn" ]] && reg+=(--registry=https://registry.npmmirror.com)
+	npm view @deepseek-ai/dsh dist-tags time --json ${reg[@]+"${reg[@]}"} 2>/dev/null | COOLDOWN_H="$UPGRADE_COOLDOWN_HOURS" node -e '
+const doc = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const t = doc["dist-tags"] || {};
+const times = doc.time || {};
+const cooldown = Number(process.env.COOLDOWN_H || 12) * 3600000;
+const parse = (v) => { const [c, p] = v.split("-", 2); return { c: c.split(".").map(Number), p: p === undefined ? null : p.split(".") }; };
+const cmp = (a, b) => {
+	const x = parse(a), y = parse(b);
+	for (let i = 0; i < 3; i++) if (x.c[i] !== y.c[i]) return x.c[i] - y.c[i];
+	if (x.p === null || y.p === null) return (x.p === null) - (y.p === null);
+	for (let i = 0; i < Math.max(x.p.length, y.p.length); i++) {
+		const p = x.p[i], q = y.p[i];
+		if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+		const pn = /^\d+$/.test(p), qn = /^\d+$/.test(q);
+		if (pn && qn && +p !== +q) return +p - +q;
+		if (pn !== qn) return pn ? -1 : 1;
+		if (p !== q) return p < q ? -1 : 1;
+	}
+	return 0;
+};
+const c = [t.latest, t.next].filter((v) => typeof v === "string" && /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(v))
+	.filter((v) => { const at = Date.parse(times[v] || ""); return Number.isFinite(at) && Date.now() - at >= cooldown; });
+if (c.length) console.log(c.sort(cmp).pop());
+' 2>/dev/null || true
+}
+
+# 把 DSH $1 装进 $INSTALL_ROOT/dsh/$1；已验证版本按时间点冻结解析。成功返回 0
+install_dsh_version() {
+	local ver="$1"
+	local prefix="$INSTALL_ROOT/dsh/$ver"
 	local bin="$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js"
 	if [[ -f "$bin" ]]; then
-		log "DSH $DSH_VERSION 已安装，跳过"
-	else
-		mkdir -p "$prefix"
-		# 数组恒不为空：bash 3.2 在 set -u 下展开空数组会报 unbound variable
-		local args=(--no-audit --no-fund --loglevel=error)
-		[[ "$MIRROR" == "cn" ]] && args+=(--registry=https://registry.npmmirror.com)
-		local frozen=1
-		[[ "$DSH_RESOLVE_BEFORE" == "none" ]] && frozen=0
-		[[ $frozen -eq 1 ]] && args+=(--before="$DSH_RESOLVE_BEFORE")
-		if ! npm install --prefix "$prefix" "${args[@]}" "@deepseek-ai/dsh@$DSH_VERSION"; then
-			# 冻结解析本身失败（例如镜像源不带发布时间戳）时退化为不冻结，
-			# 宁可装到未验证的新预发布版，也别让安装卡死在这一步。
-			if [[ $frozen -eq 1 ]]; then
-				warn "按时间点冻结解析失败，改为不冻结重试（可能装到未验证的新版本）"
-				local args2=(--no-audit --no-fund --loglevel=error)
-				[[ "$MIRROR" == "cn" ]] && args2+=(--registry=https://registry.npmmirror.com)
-				npm install --prefix "$prefix" "${args2[@]}" "@deepseek-ai/dsh@$DSH_VERSION"
-			fi
+		log "DSH $ver 已安装，跳过"
+		return 0
+	fi
+	mkdir -p "$prefix"
+	# 数组恒不为空：bash 3.2 在 set -u 下展开空数组会报 unbound variable
+	local args=(--no-audit --no-fund --loglevel=error)
+	[[ "$MIRROR" == "cn" ]] && args+=(--registry=https://registry.npmmirror.com)
+	local frozen=0
+	[[ "$ver" == "$DSH_VERIFIED" && "$DSH_RESOLVE_BEFORE" != "none" ]] && frozen=1
+	local a1=("${args[@]}")
+	[[ $frozen -eq 1 ]] && a1+=(--before="$DSH_RESOLVE_BEFORE")
+	if ! npm install --prefix "$prefix" "${a1[@]}" "@deepseek-ai/dsh@$ver"; then
+		# 冻结解析本身失败（例如镜像源不带发布时间戳）时退化为不冻结
+		if [[ $frozen -eq 1 ]]; then
+			warn "按时间点冻结解析失败，改为不冻结重试"
+			npm install --prefix "$prefix" "${args[@]}" "@deepseek-ai/dsh@$ver" || true
 		fi
-		[[ -f "$bin" ]] || die "DSH 安装产物缺失: $bin"
+	fi
+	if [[ ! -f "$bin" ]]; then
+		rm -rf "$prefix"
+		return 1
+	fi
+	return 0
+}
+
+step3_dsh() {
+	if [[ -z "$DSH_VERSION" ]]; then
+		DSH_VERSION=$(newest_dsh)
+		if [[ -n "$DSH_VERSION" ]]; then
+			DSH_PICKED_BY="官方最新版"
+		else
+			warn "查不到 DSH 官方最新版本，改装已验证版本 $DSH_VERIFIED"
+			DSH_VERSION="$DSH_VERIFIED"
+		fi
+	fi
+	[[ "$DSH_VERSION" == "$DSH_VERIFIED" && "$DSH_PICKED_BY" != "官方最新版" ]] && DSH_PICKED_BY="已验证版本"
+	log "步骤 3/9：DeepSeek Harness ${DSH_VERSION}（${DSH_PICKED_BY}，版本化安装）"
+	if ! install_dsh_version "$DSH_VERSION"; then
+		[[ "$DSH_VERSION" != "$DSH_VERIFIED" ]] || die "DSH $DSH_VERSION 安装失败"
+		warn "DSH $DSH_VERSION 安装失败，改装已验证版本 $DSH_VERIFIED"
+		DSH_VERSION="$DSH_VERIFIED"
+		DSH_PICKED_BY="已验证版本（最新版安装失败后退回）"
+		install_dsh_version "$DSH_VERSION" || die "DSH $DSH_VERSION 安装失败"
 	fi
 	ln -sfn "$DSH_VERSION" "$INSTALL_ROOT/dsh/current"
 }
@@ -456,26 +523,53 @@ step9_verify() {
 		die "健康检查失败（gate）"
 	}
 	# 等待 DSH 子进程启动 + launchToken 兑换完成（冷启动需要几秒到几十秒，小内存机器更久）
-	local i
+	wait_dsh_session || healthy=0
+	# 官方最新版起不来（网关记下了启动错误，而不只是慢）：退回已验证版本再等一轮，
+	# 与页面一键升级失败自动回滚同一思路。只是冷启动慢就不退，免得白白装回旧版
+	if [[ $healthy -eq 0 && "$DSH_VERSION" != "$DSH_VERIFIED" ]] \
+		&& printf '%s' "$LAST_HEALTH" | grep -q '"lastError":"'; then
+		warn "DSH $DSH_VERSION 没能正常启动，退回已验证版本 $DSH_VERIFIED"
+		if install_dsh_version "$DSH_VERIFIED"; then
+			DSH_VERSION="$DSH_VERIFIED"
+			DSH_PICKED_BY="已验证版本（最新版启动失败后退回）"
+			sed -i "s/\"dshVersion\": *\"[^\"]*\"/\"dshVersion\": \"$DSH_VERSION\"/" "$INSTALL_ROOT/state/config.json" || true
+			ln -sfn "$DSH_VERSION" "$INSTALL_ROOT/dsh/current"
+			dsh-vps ownshost on >/dev/null 2>&1 || true
+			systemctl restart dsh-gate
+			healthy=1
+			wait_dsh_session || healthy=0
+		fi
+	fi
+	[[ $healthy -eq 1 ]] && log "gate 正常，DSH 会话兑换成功"
+	finish_summary "$healthy"
+}
+
+# 等 DSH 子进程启动并兑换会话；成功返回 0
+wait_dsh_session() {
+	local i body
 	for i in $(seq 1 60); do
 		body=$(curl -fsS --max-time 3 "http://127.0.0.1:$GATE_PORT/gate/health" 2>/dev/null) || true
+		LAST_HEALTH="$body"
 		if printf '%s' "$body" | grep -q '"launchTokenCaptured":true' \
 			&& printf '%s' "$body" | grep -q '"dshCookie":{"authority"'; then
-			log "gate 正常，DSH 会话兑换成功"
-			break
+			return 0
 		fi
 		if [[ $i -eq 60 ]]; then
-			# 不在这里退出：令牌链接只在下面打印，退出了用户就只剩"缺少令牌"页
-			healthy=0
+			# 不在这里退出：令牌链接只在最后打印，退出了用户就只剩"缺少令牌"页
 			warn "DSH 会话兑换超时（DSH 可能仍在启动，或启动失败）"
 			local err
 			err=$(printf '%s' "$body" | sed -n 's/.*"lastError":"\([^"]*\)".*/\1/p')
 			[[ -n "$err" ]] && warn "最近错误: $err"
 			warn "排查: journalctl -u dsh-gate -n 80 --no-pager"
-			break
+			return 1
 		fi
 		sleep 2
 	done
+	return 1
+}
+
+finish_summary() {
+	local healthy="$1"
 
 	local url="https://$TRUSTED_HOST"
 	local open_url="$url"
@@ -489,7 +583,7 @@ step9_verify() {
 		echo " dsh-vps 已安装，但 DSH 尚未就绪（见上方警告；页面会显示启动进度与错误）"
 	fi
 	echo "------------------------------------------------------------"
-	echo " DSH 版本  : ${DSH_VERSION}（钉住）"
+	echo " DSH 版本  : ${DSH_VERSION}（${DSH_PICKED_BY}）"
 	echo " 访问地址  : $open_url"
 	if [[ -n "$SETUP_TOKEN" ]]; then
 		echo "             （初始设置需要上面的一次性令牌，别用不带令牌的地址）"
