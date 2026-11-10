@@ -55,7 +55,7 @@ const DEEPSEEK_KEY_REF = "DEEPSEEK_API_KEY"; // DSH 约定：deriveKeyRef("deeps
 const PLUGIN_OPTIONS = [
 	// required：本产品自己的设置页（版本与一键升级、网关状态、安装/卸载到 VPS），必装，向导里勾选且不可取消
 	{ id: "dsh-vps", pkg: "dsh-vps", name: "VPS 部署 dsh-vps（必装）", nameEn: "VPS Deploy dsh-vps (required)", desc: "本产品的设置页「设置 → VPS 部署」：DSH 版本与一键升级、网关状态，以及把 DSH 安装到 / 卸载出其他 VPS", descEn: "This project's settings page, Settings → VPS Deploy: DSH version and one-click upgrade, gateway status, and installing DSH on / removing it from other VPSs", required: true },
-	{ id: "dshmarket", pkg: "dshmarket", name: "插件市场 dsh-market", nameEn: "Plugin market dsh-market", desc: "设置页内浏览/搜索/一键安装社区插件与主题，之后想装什么都在这里装", descEn: "Browse, search and install community plugins and themes from Settings — install anything else from here later" },
+	{ id: "dsh-pick", pkg: "dsh-pick", name: "插件选购 dsh-pick", nameEn: "Plugin picker dsh-pick", desc: "说出需求，帮你在 DSH 生态里找候选、多维比较、给出首选/备选/不推荐，挑好直接安装", descEn: "Describe what you need; it finds candidates in the DSH ecosystem, compares them and names a first choice, alternatives and ones to skip — and installs your pick directly" },
 	{ id: "dsh-vps-manager", pkg: "dsh-vps-manager", name: "VPS 管理 dsh-vps-manager", nameEn: "VPS manager dsh-vps-manager", desc: "在 DSH 里直接管理这台 VPS：不花 token 的查询命令、对话内终端、按风险分级确认的 AI 操作、运维菜谱库", descEn: "Manage this VPS from inside DSH: token-free query commands, an in-conversation terminal, risk-graded AI operations and a recipe library" },
 ];
 // pnpm 12 起默认带约 1 天的发布冷却期（minimumReleaseAge），`pnpm add <pkg>` 会装到一天前的旧版。
@@ -1700,7 +1700,7 @@ ${token ? `<input type="hidden" name="token" value="${esc(token)}">` : ""}
 <input id="k" name="apiKey" type="password" autocomplete="off" placeholder="sk-...">
 <p class="hint">${L("现在填写最省事；跳过也可稍后在登录后的「添加 API Key」引导，或设置 → 模型 → DeepSeek 中填写。", "Easiest to fill in now; you can also add it later from the \"Add API key\" prompt after signing in, or under Settings → Models → DeepSeek.")}</p>
 <hr>
-<p class="hint" style="margin:2px 0 0">${L("预置插件（默认全选，可取消；其余插件装好后随时在插件市场里自行安装）", "Bundled plugins (pre-checked, optional ones can be unchecked; install anything else from the plugin market later)")}</p>
+<p class="hint" style="margin:2px 0 0">${L("预置插件（默认全选，可取消；其余插件装好后随时用 dsh-pick 挑选安装，或在 DSH 的「插件」页安装）", "Bundled plugins (pre-checked, optional ones can be unchecked; install anything else later with dsh-pick or from DSH's Plugins page)")}</p>
 ${PLUGIN_OPTIONS.map((o) => `
 <label class="chk"><input type="checkbox" name="plugin" value="${o.id}" checked${o.required ? " disabled" : ""}> <span>${esc(lang === "zh" ? o.name : o.nameEn || o.name)}<br><span class="tip">${esc(lang === "zh" ? o.desc : o.descEn || o.desc)}</span></span></label>`).join("")}
 <button type="submit">${L("完成设置", "Finish setup")}</button>
